@@ -157,6 +157,15 @@ int handle_request(int clientSocket, struct ParsedRequest *request, char *cache_
 	strcat(buf, "\r\n");
     
 	size_t len = strlen(buf);
+	// ----------------------------------------------------------
+	if (strcmp(request->method, "GET") != 0) {
+    fprintf(stderr, "Unsupported method: %s\n", request->method);
+    ParsedRequest_destroy(request);
+    close(clientSocket);
+    pthread_exit(NULL);
+	}
+	// ----------------------------------------------------------
+
 
 	if (ParsedHeader_set(request, "Connection", "close") < 0){
 		printf("set header key not work\n");
@@ -202,7 +211,7 @@ int handle_request(int clientSocket, struct ParsedRequest *request, char *cache_
 	{
 		bytes_send = send(clientSocket, buf, bytes_send, 0);
 		
-		for(int i=0;i<bytes_send/sizeof(char);i++){
+		for(size_t i=0;i<(size_t)bytes_send;i++){
 			temp_buffer[temp_buffer_index] = buf[i];
 			// printf("%c",buf[i]); // Response Printing
 			temp_buffer_index++;
@@ -289,21 +298,14 @@ void* thread_fn(void* socketNew)
 	printf("RECEIVED BUFFER FROM CLIENT\n");
     printf("-------------------------BUFFER----------------------------\n");
 	printf("%s\n",buffer);
-	printf("--------------------- BUFFER LENGTH: %d----------------------\n",strlen(buffer));
-	
+	printf("--------------------- BUFFER LENGTH: %zu----------------------\n",strlen(buffer));
 
-    //creating copy of buffer
-	char *tempReq = (char*)malloc(strlen(buffer)*sizeof(char)+1);
-    //tempReq, buffer both store the http request sent by client
-	for (int i = 0; i < strlen(buffer); i++)
-	{
-		tempReq[i] = buffer[i];
-	}
 
-    struct ParsedRequest* request = ParsedRequest_create();
     int found_in_cache = 0;
 	//Parse request
-    if(ParsedRequest_parse(request, tempReq, strlen(tempReq))==0){
+    struct ParsedRequest* request = ParsedRequest_create();
+	
+    if(ParsedRequest_parse(request, buffer, strlen(buffer))==0){
         if(request->host && request->path && (checkHTTPversion(request->version)==1)){
             char* cache_key = make_cache_key(request->host, request->path);
             
@@ -324,10 +326,6 @@ void* thread_fn(void* socketNew)
                 while(pos < temp->len){
                     int chunk = (temp->len - pos)>MAX_BYTES?MAX_BYTES:(temp->len-pos);
                     bzero(response,MAX_BYTES);
-                    // for(int i=0;i<MAX_BYTES;i++){
-                    //     response[i]=temp->data[pos];
-                    //     pos++;
-                    // }
                     memcpy(response, temp->data + pos, chunk);
                     //send back to client.
                     int sent = send(socket,response, chunk,0);
@@ -340,6 +338,7 @@ void* thread_fn(void* socketNew)
                 }
                 printf("Data retrived from the Cache\n\n");
                 printf("%s\n\n",response);
+				found_in_cache = 1;
             }
             else{//cache miss:fetch and cache
                 printf("Not found in cache, dispatching to remote\n");
@@ -350,10 +349,9 @@ void* thread_fn(void* socketNew)
                 printf("Back from the Remote Server!\n");
             }
             free(cache_key);
-            found_in_cache = 1;
         }
     }
-	else{
+	else{		
 		printf("Parsing Failed\n");
 	}
     if(!found_in_cache){
@@ -368,7 +366,7 @@ void* thread_fn(void* socketNew)
     ParsedRequest_destroy(request);
 	shutdown(socket, SHUT_RDWR);
 	close(socket);
-	free(tempReq);
+	free(buffer);
 
 	sem_post(&seamaphore);	
 	sem_getvalue(&seamaphore,&p);
