@@ -95,7 +95,8 @@ int sendErrorMessage(int socket, int status_code)
 }
 
 int connectRemoteServer(char* host_addr, int port_num)
-{
+{   
+    //Simply creating and completing handshake for remote socket.
 	// Creating Socket for remote server ---------------------------
 
 	int remoteSocket = socket(AF_INET, SOCK_STREAM, 0);
@@ -138,13 +139,15 @@ int connectRemoteServer(char* host_addr, int port_num)
 
 int handle_request(int clientSocket, struct ParsedRequest *request, char *tempReq)
 {
+    //Handle Request Job - Call above funs to create socket on proxy server and receive data from the remote server.
+    //create buffer to receive data from remote server.
 	char *buf = (char*)malloc(sizeof(char)*MAX_BYTES);
 	strcpy(buf, "GET ");
 	strcat(buf, request->path);
 	strcat(buf, " ");
 	strcat(buf, request->version);
 	strcat(buf, "\r\n");
-
+    
 	size_t len = strlen(buf);
 
 	if (ParsedHeader_set(request, "Connection", "close") < 0){
@@ -164,19 +167,25 @@ int handle_request(int clientSocket, struct ParsedRequest *request, char *tempRe
 	}
 
 	int server_port = 80;				// Default Remote Server Port
-	if(request->port != NULL)
+	//set proxy server_port if receied from main function.
+    if(request->port != NULL)
 		server_port = atoi(request->port);
 
-	int remoteSocketID = connectRemoteServer(request->host, server_port);
+//1. Get new socket id to send request to remote server from proxy server (calling connect remote server function)
+	int remoteSocketID = connectRemoteServer(request->host, server_port);//handshake karwake vapas le aao socket descriptor.
 
 	if(remoteSocketID < 0)
 		return -1;
 
+    //send GET request including path, version and all.
 	int bytes_send = send(remoteSocketID, buf, strlen(buf), 0);
 
-	bzero(buf, MAX_BYTES);
+	bzero(buf, MAX_BYTES);//clear buf before using again
 
+    //Receive back from remote server(ex. google.com)
 	bytes_send = recv(remoteSocketID, buf, MAX_BYTES-1, 0);
+
+    //copy of response
 	char *temp_buffer = (char*)malloc(sizeof(char)*MAX_BYTES); //temp buffer
 	int temp_buffer_size = MAX_BYTES;
 	int temp_buffer_index = 0;
@@ -205,6 +214,8 @@ int handle_request(int clientSocket, struct ParsedRequest *request, char *tempRe
 	} 
 	temp_buffer[temp_buffer_index]='\0';
 	free(buf);
+
+    //Finally add new element to cache.
 	add_cache_element(temp_buffer, strlen(temp_buffer), tempReq);
 	printf("Done\n");
 	free(temp_buffer);
@@ -235,7 +246,9 @@ int checkHTTPversion(char *msg)
 
 void* thread_fn(void* socketNew)
 {
-	sem_wait(&seamaphore); 
+    //thread fn job - get data from client, parse the request, check if found in cache and return else send to handle request to serve client with remote server's response if happens to be a valid request.
+	//and close client socket after request served.
+    sem_wait(&seamaphore); 
 	int p;
 	sem_getvalue(&seamaphore,&p);
 	printf("semaphore value before acquiring new thread:%d\n",p);
@@ -243,7 +256,6 @@ void* thread_fn(void* socketNew)
 	int socket=*t;           // Socket is socket descriptor of the connected Client
 	int bytes_send_client,len;	  // Bytes Transferred
 
-	
 	char *buffer = (char*)calloc(MAX_BYTES,sizeof(char));	// Creating buffer of 4kb for a client
 	
 	
@@ -282,6 +294,10 @@ void* thread_fn(void* socketNew)
 	
 	//checking for the request in cache 
     printf("Going to check the request in cache!\n");
+    
+    // char cache_key[1024];
+    // sprintf(cache_key, "%s%s", request->host, request->path);
+
 	struct cache_element* temp = find(tempReq);
     printf("I am back from cache with temp as:%d\n", temp);
 
@@ -339,7 +355,7 @@ void* thread_fn(void* socketNew)
                     printf("Back from Remote Server!");
 				}
 				else{
-					printf("Not of get request!");
+					printf("Invalid Http Parameters!\n");
                     sendErrorMessage(socket, 500);			// 500 Internal Error
                 }
 			}
@@ -484,19 +500,22 @@ int main(int argc, char * argv[]) {
 }
 
 cache_element* find(char* url){
-
-// Checks for url in the cache if found returns pointer to the respective cache element or else returns NULL
+    // Checks for URL in the cache; if found, returns pointer to the respective cache element, otherwise returns NULL
     cache_element* site=NULL;
-	//sem_wait(&cache_lock);
+
+    //Acquire lock cache is shared
     int temp_lock_val = pthread_mutex_lock(&lock);
-	printf("Remove Cache Lock Acquired %d\n",temp_lock_val); 
+	printf("Finding in Cache, Cache Lock Acquired %d\n",temp_lock_val); 
+    //Head is already initialized globally
+    //check if cache is not empty
     if(head!=NULL){
+        //set site as head for traversal in cache list.
         site = head;
         while (site!=NULL)
         {
             if(!strcmp(site->url,url)){
 				printf("LRU Time Track Before : %ld", site->lru_time_track);
-                printf("\nurl found\n");
+                printf("\nUrl found\n");
 				// Updating the time_track
 				site->lru_time_track = time(NULL);
 				printf("LRU Time Track After : %ld", site->lru_time_track);
@@ -506,11 +525,11 @@ cache_element* find(char* url){
         }       
     }
 	else {
-    printf("\nurl not found\n");
+    printf("\nUrl not found\n");
 	}
-	//sem_post(&cache_lock);
+
     temp_lock_val = pthread_mutex_unlock(&lock);
-	printf("Remove Cache Lock Unlocked %d\n",temp_lock_val); 
+	printf("Cache traversal complete, Cache Lock Unlocked %d\n",temp_lock_val); 
     return site;
 }
 
@@ -548,13 +567,12 @@ void remove_cache_element(){
 
 int add_cache_element(char* data,int size,char* url){
     // Adds element to the cache
-	// sem_wait(&cache_lock);
     int temp_lock_val = pthread_mutex_lock(&lock);
 	printf("Add Cache Lock Acquired %d\n", temp_lock_val);
     int element_size=size+1+strlen(url)+sizeof(cache_element); // Size of the new element which will be added to the cache
     if(element_size>MAX_ELEMENT_SIZE){
-		//sem_post(&cache_lock);
         // If element size is greater than MAX_ELEMENT_SIZE we don't add the element to the cache
+        printf("Element size greater then max capacity, hence not storing in cache\n");
         temp_lock_val = pthread_mutex_unlock(&lock);
 		printf("Add Cache Lock Unlocked %d\n", temp_lock_val);
 		// free(data);
@@ -565,20 +583,23 @@ int add_cache_element(char* data,int size,char* url){
     else
     {   while(cache_size+element_size>MAX_SIZE){
             // We keep removing elements from cache until we get enough space to add the element
+            printf("Vacating cache for new element\n");
             remove_cache_element();
         }
+        //done then add
         cache_element* element = (cache_element*) malloc(sizeof(cache_element)); // Allocating memory for the new cache element
         element->data= (char*)malloc(size+1); // Allocating memory for the response to be stored in the cache element
 		strcpy(element->data,data); 
-        element -> url = (char*)malloc(1+( strlen( url )*sizeof(char)  )); // Allocating memory for the request to be stored in the cache element (as a key)
-		strcpy( element -> url, url );
+
+        // element -> url = (char*)malloc(1+( strlen( url )*sizeof(char)  )); // Allocating memory for the request to be stored in the cache element (as a key)
+		// strcpy( element -> url, url );
 		element->lru_time_track=time(NULL);    // Updating the time_track
         element->next=head; 
         element->len=size;
         head=element;
         cache_size+=element_size;
         temp_lock_val = pthread_mutex_unlock(&lock);
-		printf("Add Cache Lock Unlocked %d\n", temp_lock_val);
+		printf("Element added, Add Cache Lock Unlocked %d\n", temp_lock_val);
 		//sem_post(&cache_lock);
 		// free(data);
 		// printf("--\n");
